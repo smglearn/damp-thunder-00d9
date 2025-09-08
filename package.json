@@ -15,25 +15,25 @@
     "dash": true
   },
   "dependencies": {
-    "nanoid": "5.0.8",
+    "nanoid": "^5.1.5",
     "partyserver": "0.0.57",
     "partysocket": "1.0.2",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "react-router": "7.2.0"
+    "react-router": "^7.8.2"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250204.0",
     "@types/react": "18.3.12",
     "@types/react-dom": "18.3.1",
-    "esbuild": "0.24.0",
+    "esbuild": "^0.25.9",
     "typescript": "5.7.2",
-    "wrangler": "3.107.3"
+    "wrangler": "^4.34.0"
   },
   "scripts": {
-    "check": "tsc --project src/client && tsc --project src/server && wrangler --experimental-json-config deploy --dry-run",
-    "deploy": "wrangler --experimental-json-config deploy",
-    "dev": "wrangler --experimental-json-config dev",
-    "types": "wrangler --experimental-json-config types ./src/server/worker-configuration.d.ts"
+    "check": "tsc --project src/client && tsc --project src/server && npx wrangler deploy --dry-run",
+    "deploy": "npx wrangler deploy",
+    "dev": "npx wrangler dev",
+    "types": "npx wrangler types ./src/server/worker-configuration.d.ts"
   }
 }
