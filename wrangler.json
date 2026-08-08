@@ -4,7 +4,9 @@
   "name": "thunder-sms",
   "migrations": [
     {
-      "new_sqlite_classes": ["Chat"],
+      "new_sqlite_classes": [
+        "Chat"
+      ],
       "tag": "v1"
     }
   ],
@@ -27,5 +29,8 @@
   "observability": {
     "enabled": true
   },
-  "upload_source_maps": true
+  "upload_source_maps": true,
+  "compatibility_flags": [
+    "nodejs_compat"
+  ]
 }
