@@ -23,14 +23,20 @@
     "react-router": "7.2.0"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.20.3",
     "@cloudflare/workers-types": "^4.20250204.0",
     "@types/react": "18.3.12",
     "@types/react-dom": "18.3.1",
+    "@vitest/browser": "^4.1.10",
     "esbuild": "0.24.0",
+    "miniflare": "^5.20260801.1-alpha",
     "typescript": "5.7.2",
+    "vitest": "^4.1.10",
+    "vitest-environment-miniflare": "^2.14.4",
     "wrangler": "3.107.3"
   },
   "scripts": {
+    "test": "vitest run",
     "check": "tsc --project src/client && tsc --project src/server && wrangler --experimental-json-config deploy --dry-run",
     "deploy": "wrangler --experimental-json-config deploy",
     "dev": "wrangler --experimental-json-config dev",
