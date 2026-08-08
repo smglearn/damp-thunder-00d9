@@ -70,9 +70,13 @@ export class Chat extends Server<Env> {
     this.broadcast(message);
 
     // let's update our local messages store
-    const parsed = JSON.parse(message as string) as Message;
-    if (parsed.type === "add" || parsed.type === "update") {
-      this.saveMessage(parsed);
+    try {
+      const parsed = JSON.parse(message as string) as Message;
+      if (parsed.type === "add" || parsed.type === "update") {
+        this.saveMessage(parsed);
+      }
+    } catch (e) {
+      // Handle invalid JSON gracefully
     }
   }
 }
