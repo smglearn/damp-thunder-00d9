@@ -10,7 +10,7 @@ import type { ChatMessage, Message } from "../shared";
 export class Chat extends Server<Env> {
   static options = { hibernate: true };
 
-  messages = [] as ChatMessage[];
+  messages = new Map<string, ChatMessage>();
 
   broadcastMessage(message: Message, exclude?: string[]) {
     this.broadcast(JSON.stringify(message), exclude);
@@ -26,33 +26,25 @@ export class Chat extends Server<Env> {
     );
 
     // load the messages from the database
-    this.messages = this.ctx.storage.sql
+    const dbMessages = this.ctx.storage.sql
       .exec(`SELECT * FROM messages`)
       .toArray() as ChatMessage[];
+    for (const msg of dbMessages) {
+      this.messages.set(msg.id, msg);
+    }
   }
 
   onConnect(connection: Connection) {
     connection.send(
       JSON.stringify({
         type: "all",
-        messages: this.messages,
+        messages: Array.from(this.messages.values()),
       } satisfies Message),
     );
   }
 
   saveMessage(message: ChatMessage) {
-    // check if the message already exists
-    const existingMessage = this.messages.find((m) => m.id === message.id);
-    if (existingMessage) {
-      this.messages = this.messages.map((m) => {
-        if (m.id === message.id) {
-          return message;
-        }
-        return m;
-      });
-    } else {
-      this.messages.push(message);
-    }
+    this.messages.set(message.id, message);
 
     this.ctx.storage.sql.exec(
       `INSERT INTO messages (id, user, role, content) VALUES ('${
