@@ -24,16 +24,23 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250204.0",
+    "@testing-library/jest-dom": "^7.0.0",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.3",
     "@types/react": "18.3.12",
     "@types/react-dom": "18.3.1",
+    "@types/react-router": "^5.1.20",
     "esbuild": "0.24.0",
+    "jsdom": "^29.1.1",
     "typescript": "5.7.2",
+    "vitest": "^4.1.10",
     "wrangler": "3.107.3"
   },
   "scripts": {
     "check": "tsc --project src/client && tsc --project src/server && wrangler --experimental-json-config deploy --dry-run",
     "deploy": "wrangler --experimental-json-config deploy",
     "dev": "wrangler --experimental-json-config dev",
-    "types": "wrangler --experimental-json-config types ./src/server/worker-configuration.d.ts"
+    "types": "wrangler --experimental-json-config types ./src/server/worker-configuration.d.ts",
+    "test": "vitest run"
   }
 }
