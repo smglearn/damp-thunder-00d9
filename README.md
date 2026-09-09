@@ -1,36 +1,21 @@
-# Durable Chat App
+# Thunder SMS
 
-![Template Preview](https://imagedelivery.net/wSMYJvS3Xw-n339CbDyDIA/da00d330-9a3b-40a2-e6df-b08813fb7200/public)
+Invite-only private chat on Cloudflare Workers and a SQLite Durable Object.
 
-<!-- dash-content-start -->
+The production entry point is `src/worker.js`; `src/client.jsx` is the browser client. Older template sources remain for historical reference and are not built.
 
-With this template, you can deploy your own chat app to converse with other users in real-time. Going to the [demo website](https://thunder-sms.templates.workers.dev) puts you into a unique chat room based on the ID in the url. Share that ID with others to chat with them! This is powered by [Durable Objects](https://developers.cloudflare.com/durable-objects/) and [PartyKit](https://www.partykit.io/).
+## Development and verification
 
-## How It Works
+Use Node.js 22 or newer. Run `npm ci`, then `npm test`. Tests cover encryption, authentication, ciphertext persistence, delivery proof, retries, pagination and read-only legacy archives. `node test/preview.mjs` starts a localhost-only synthetic identity preview; never deploy that preview gateway.
 
-Users are assigned their own chat room when they first visit the page, and can talk to others by sharing their room URL. When someone joins the chat room, a WebSocket connection is opened with a [Durable Object](https://developers.cloudflare.com/durable-objects/) that stores and synchronizes the chat history.
+## Deployment
 
-The Durable Object instance that manages the chat room runs in one location, and handles all incoming WebSocket connections. Chat messages are stored and retrieved using the [Durable Object SQL Storage API](https://developers.cloudflare.com/durable-objects/api/sql-storage/). When a new user joins the room, the existing chat history is retrieved from the Durable Object for that room. When a user sends a chat message, the message is stored in the Durable Object for that room and broadcast to all other users in that room via WebSocket connection. This template uses the [PartyKit Server API](https://docs.partykit.io/reference/partyserver-api/) to simplify the connection management logic, but could also be implemented using Durable Objects on their own.
+`npm run deploy` runs verification and deploys the existing `thunder-sms` Worker using `wrangler.json`. Cloudflare Builds runs this command for main. The existing Chat binding and v1 migration are retained. Do not change the room identifier or migration to reset a room.
 
-<!-- dash-content-end -->
+Private configuration is maintained in Cloudflare: ACCESS_TEAM, ACCESS_AUD, OWNER_EMAIL and MEMBER_EMAILS. `keep_vars: true` preserves these settings; no member addresses or provider secrets belong in this public repository. Access policy membership must match Worker membership.
 
-## Getting Started
+## Encryption and recovery
 
-Outside of this repo, you can start a new project with this template using [C3](https://developers.cloudflare.com/pages/get-started/c3/) (the `create-cloudflare` CLI):
+Messages are encrypted in the browser with AES-GCM before upload. A shared recovery secret derives a nonextractable browser key saved in IndexedDB. Save the recovery secret in a password manager before starting. New devices require that secret; device approval and recovery-key rotation are not implemented. Losing both the secret and unlocked devices makes old encrypted history unrecoverable. Sign-in does not recover encryption keys.
 
-```
-npm create cloudflare@latest -- --template=cloudflare/templates/thunder-sms
-```
-
-A live public deployment of this template is available at [https://thunder-sms.templates.workers.dev](https://thunder-sms.templates.workers.dev)
-
-## Setup Steps
-
-1. Install the project dependencies with a package manager of your choice:
-   ```bash
-   npm install
-   ```
-2. Deploy the project!
-   ```bash
-   npx wrangler deploy
-   ```
+The server retains sender and delivery metadata. Delivery indicates a recipient client supplied proof after decrypting; it does not establish that a person read the message. This shared-key design does not provide forward secrecy or per-device signatures. Legacy prototype rooms are owner-only read-only archives and retain their original plaintext storage.
