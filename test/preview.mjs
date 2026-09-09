@@ -1,0 +1,12 @@
+// Local-only test gateway. Never include in a production deployment.
+import {Miniflare,convertV4MiniflareOptions} from 'miniflare';
+import {generateKeyPair,exportJWK,SignJWT} from 'jose';
+import {readFile} from 'node:fs/promises';
+const issuer='https://test.cloudflareaccess.com';
+const {privateKey,publicKey}=await generateKeyPair('RS256');
+const jwk={...await exportJWK(publicKey),kid:'preview',alg:'RS256',use:'sig'};
+const token=email=>new SignJWT({email}).setProtectedHeader({alg:'RS256',kid:'preview'}).setIssuer(issuer).setAudience('local-preview').setSubject(email).setExpirationTime('12h').sign(privateKey);
+const gateway=`export default {async fetch(request,env){const url=new URL(request.url);if(!['127.0.0.1','localhost'].includes(url.hostname))return new Response('Local preview only',{status:403});const selected=url.searchParams.get('as');if(selected==='alice'||selected==='bob'){return new Response(null,{status:302,headers:{Location:'/', 'Set-Cookie':'preview='+selected+'; Path=/; HttpOnly; SameSite=Strict'}});}const who=request.headers.get('cookie')?.includes('preview=bob')?'bob':'alice';const headers=new Headers(request.headers);headers.set('Cf-Access-Jwt-Assertion',env[who]);return env.APP.fetch(new Request(request,{headers}));}};`;
+const mf=new Miniflare(convertV4MiniflareOptions({host:'127.0.0.1',port:8787,workers:[{name:'gateway',modules:true,script:gateway,compatibilityDate:'2024-11-01',bindings:{alice:await token('alice@example.test'),bob:await token('bob@example.test')},serviceBindings:{APP:'thunder-preview'}},{name:'thunder-preview',modules:true,scriptPath:'dist/worker.js',compatibilityDate:'2024-11-01',durableObjects:{Chat:{className:'Chat',useSQLite:true}},bindings:{ACCESS_TEAM:issuer,ACCESS_AUD:'local-preview',OWNER_EMAIL:'alice@example.test',MEMBER_EMAILS:'alice@example.test,bob@example.test'},serviceBindings:{ASSETS:async request=>{const path=new URL(request.url).pathname;const files={'/':'index.html','/app.js':'app.js','/styles.css':'styles.css'};if(!files[path])return new Response('Not found',{status:404});return new Response(await readFile('public/'+files[path]),{headers:{'Content-Type':path.endsWith('.js')?'text/javascript':path.endsWith('.css')?'text/css':'text/html'}});}},outboundService:request=>request.url===issuer+'/cdn-cgi/access/certs'?Response.json({keys:[jwk]}):new Response('Blocked in preview',{status:403})}]}));
+console.log('Local preview ready:',String(await mf.ready));
+for(const signal of ['SIGINT','SIGTERM'])process.on(signal,async()=>{await mf.dispose();process.exit(0);});
