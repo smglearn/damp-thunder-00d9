@@ -7,7 +7,7 @@
     "test": "npm run build && node --test test/*.test.mjs",
     "dev": "npm run build && wrangler dev --local --ip 127.0.0.1",
     "check": "npm test",
-    "deploy": "npm run build && wrangler deploy --config wrangler.json"
+    "deploy": "npm test && wrangler deploy --config wrangler.json"
   },
   "dependencies": {
     "jose": "^6.2.12",
