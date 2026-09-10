@@ -5,7 +5,7 @@ import {generateKeyPair,exportJWK,SignJWT} from 'jose';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createRecoveryKey,importRecoveryKey,encryptMessage,decryptMessage} from '../src/crypto.js';
+import {createRecoveryKey,importRecoveryKey,encryptMessage,decryptMessage,reencryptMessage} from '../src/crypto.js';
 const issuer='https://test.cloudflareaccess.com',origin='http://localhost';
 function inbox(ws){const events=[];let wake;ws.addEventListener('message',e=>{events.push(JSON.parse(e.data));wake?.();});ws.accept();return {send:e=>ws.send(JSON.stringify(e)),async next(type){const end=Date.now()+5000;for(;;){const i=events.findIndex(e=>e.type===type);if(i>=0)return events.splice(i,1)[0];if(Date.now()>end)throw Error('Timed out waiting for '+type+'; '+JSON.stringify(events));await new Promise(r=>{wake=r;setTimeout(r,50);});}},close:()=>ws.close()};}
 test('real Worker: verified membership, ciphertext persistence, recipient receipts, and retry safety',async()=>{
@@ -48,7 +48,28 @@ test('real Worker: verified membership, ciphertext persistence, recipient receip
  a.send({type:'history'});const latest=await a.next('history');assert.equal(latest.messages.length,50);assert.equal(latest.hasMore,true);
  a.send({type:'history',before:latest.messages[0].seq});const earlier=await a.next('history');assert.equal(earlier.messages.length,2);assert.equal(earlier.hasMore,false);
 
- for(const c of clients)c.close();await mf.dispose();mf=new Miniflare(convertV4MiniflareOptions(options));
+ for(const c of clients.splice(0))c.close();await mf.dispose();mf=new Miniflare(convertV4MiniflareOptions(options));
  const restored=await connect(bob);restored.send({type:'history'});const recent=await restored.next('history');assert.equal(recent.messages.length,50);restored.send({type:'history',before:recent.messages[0].seq});const saved=await restored.next('history');assert.equal(saved.messages[0].deliveries.length,1);assert.equal((await decryptMessage(keys,saved.messages[0])).text,decoded.text);
+ // Recovery replacement must preserve identity, receipts and history atomically.
+ const snapshot=await (await request('/api/recovery',alice)).json();
+ assert.equal((await request('/api/recovery',bob)).status,403);
+ const newKeys=await importRecoveryKey(createRecoveryKey());
+ const replacement={previousKeyId:keys.keyId,keyId:newKeys.keyId,messages:await Promise.all(snapshot.messages.map(m=>reencryptMessage(keys,newKeys,m)))};
+ const rotate=(body,jwt=alice,requestOrigin=origin)=>mf.dispatchFetch(origin+'/api/recovery',{method:'POST',headers:{'Cf-Access-Jwt-Assertion':jwt,Origin:requestOrigin,'Content-Type':'application/json'},body:JSON.stringify(body)});
+ assert.equal((await rotate(replacement,bob)).status,403);
+ assert.equal((await rotate(replacement,alice,'https://evil.example')).status,403);
+ assert.equal((await rotate({...replacement,previousKeyId:'A'.repeat(43)})).status,409);
+ assert.equal((await rotate({...replacement,messages:replacement.messages.slice(1)})).status,409);
+ assert.equal((await rotate({...replacement,messages:replacement.messages.map((m,i)=>i?m:{...m,sender:'bob@example.test'})})).status,400);
+ assert.equal((await (await request('/api/recovery',alice)).json()).keyId,keys.keyId);
+ const rotated=await rotate(replacement);assert.equal(rotated.status,200);assert.equal((await rotated.json()).updated,52);
+ assert.equal((await rotate(replacement)).status,409);
+ const after=await (await request('/api/recovery',alice)).json();assert.equal(after.keyId,newKeys.keyId);
+ assert.equal((await decryptMessage(newKeys,after.messages[0])).text,decoded.text);
+ await assert.rejects(()=>decryptMessage(keys,after.messages[0]));
+ restored.send({type:'history',before:3});const preserved=await restored.next('history');assert.equal(preserved.messages[0].deliveries.length,1);assert.equal(preserved.messages[0].seq,saved.messages[0].seq);
+ restored.send({type:'send',message:await encryptMessage(keys,'bob@example.test','stale key')});assert.match((await restored.next('error')).message,/key/);
+ for(const c of clients.splice(0))c.close();await mf.dispose();mf=new Miniflare(convertV4MiniflareOptions(options));
+ const finalSnapshot=await (await request('/api/recovery',alice)).json();assert.equal(finalSnapshot.keyId,newKeys.keyId);assert.equal((await decryptMessage(newKeys,finalSnapshot.messages[0])).text,decoded.text);
  }finally{for(const c of clients){try{c.close();}catch{}}await mf.dispose();await rm(directory,{recursive:true,force:true});}
 });

@@ -1,12 +1,13 @@
 import React,{useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import {ROOM,createRecoveryKey,importRecoveryKey,encryptMessage,decryptMessage} from './crypto.js';
+import {ROOM,createRecoveryKey,importRecoveryKey,encryptMessage,decryptMessage,reencryptMessage} from './crypto.js';
 import {vault} from './storage.js';
 
 function App(){
   const [me,setMe]=useState(null),[keys,setKeys]=useState(null),[remoteKey,setRemoteKey]=useState(undefined);
   const [online,setOnline]=useState(false),[problem,setProblem]=useState(''),[recovery,setRecovery]=useState(''),[generated,setGenerated]=useState(''),[saved,setSaved]=useState(false);
   const [items,setItems]=useState([]),[draft,setDraft]=useState(''),[more,setMore]=useState(false),[busy,setBusy]=useState(false),[pending,setPending]=useState([]);
+  const [replacement,setReplacement]=useState(''),[replacementSaved,setReplacementSaved]=useState(false);
   const socket=useRef(null),keyRef=useRef(null),meRef=useRef(null),queue=useRef([]),serial=useRef(Promise.resolve()),cache=useRef(new Map()),acknowledged=useRef(new Set());
   const prefix=()=>`room:${ROOM}:user:${meRef.current.email}:`;
   const emit=e=>{if(socket.current?.readyState===WebSocket.OPEN){socket.current.send(JSON.stringify(e));return true;}return false;};
@@ -22,7 +23,15 @@ function App(){
     if(queue.current.some(x=>x.id===m.id))await saveQueue(queue.current.filter(x=>x.id!==m.id));
   }
   async function onEvent(e){
-    if(e.type==='hello'){setRemoteKey(e.keyId);return;}
+    if(e.type==='hello'){
+      setRemoteKey(e.keyId);
+      const staged=await vault('get',prefix()+'replacement');
+      if(staged?.keyId===e.keyId&&keyRef.current?.keyId!==e.keyId){
+        await vault('put',prefix()+'keys',staged);keyRef.current=staged;setKeys(staged);
+        cache.current.clear();setItems([]);setReplacement('');setReplacementSaved(false);emit({type:'history'});
+      }
+      return;
+    }
     if(e.type==='error'){setProblem(e.message);return;}
     if(e.type==='receipt'){setItems(old=>old.map(m=>m.id===e.id?{...m,deliveries:e.deliveries}:m));return;}
     if(!keyRef.current)return;
@@ -51,9 +60,14 @@ function App(){
     if(remoteKey&&remoteKey!==imported.keyId)throw Error('This recovery key does not match the private room.');
     if(remoteKey===undefined)throw Error('Wait for the room connection.');
     if(!remoteKey&&!create)throw Error('The room owner needs to initialize encryption first.');
+    if(keyRef.current&&keyRef.current.keyId!==imported.keyId&&queue.current.length){
+      const migrated=[];for(const m of queue.current)migrated.push(await reencryptMessage(keyRef.current,imported,m));
+      await saveQueue(migrated);
+    }
     await vault('put',prefix()+'keys',imported);keyRef.current=imported;setKeys(imported);cache.current.clear();acknowledged.current.clear();
     if(create&&!emit({type:'configure',keyId:imported.keyId}))throw Error('Reconnect before initializing the room.');
     emit({type:'history'});setRecovery('');setGenerated('');setSaved(false);
+    for(const m of queue.current)emit({type:'send',message:m});
   }catch(e){setProblem(e.message);}finally{setBusy(false);}}
   async function submit(e){e.preventDefault();setBusy(true);setProblem('');try{
     if(keys?.keyId!==remoteKey)throw Error('Unlock this room first.');
@@ -62,7 +76,24 @@ function App(){
     const queued=serial.current.then(async()=>{await saveQueue([...queue.current,m]);setDraft('');emit({type:'send',message:m});});
     serial.current=queued.catch(()=>{});await queued;
   }catch(e){setProblem(e.message);}finally{setBusy(false);}}
-  async function lock(){await serial.current;await vault('delete',prefix()+'keys');keyRef.current=null;setKeys(null);setItems([]);cache.current.clear();setRecovery('');setGenerated('');}
+  async function lock(){await serial.current;await vault('delete',prefix()+'keys');await vault('delete',prefix()+'replacement');keyRef.current=null;setKeys(null);setItems([]);cache.current.clear();setRecovery('');setGenerated('');setReplacement('');}
+  async function replaceKey(){
+    setBusy(true);setProblem('');
+    try{
+      await serial.current;
+      if(!replacementSaved||!online||queue.current.length)throw Error('Save the new key and wait for pending messages to finish.');
+      const next=await importRecoveryKey(replacement),old=keyRef.current;
+      const r=await fetch('/api/recovery',{cache:'no-store'});if(!r.ok)throw Error(await r.text());
+      const snapshot=await r.json();if(snapshot.keyId!==old?.keyId)throw Error('Reload and unlock the current room first.');
+      const messages=[];for(const m of snapshot.messages)messages.push(await reencryptMessage(old,next,m));
+      // Persist the candidate before commit. A lost response is recovered by hello.
+      await vault('put',prefix()+'replacement',next);
+      const result=await fetch('/api/recovery',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({previousKeyId:old.keyId,keyId:next.keyId,messages})});
+      if(!result.ok)throw Error(await result.text());
+      await onEvent({type:'hello',keyId:(await result.json()).keyId});
+      setProblem('Recovery key replaced. Share the new key directly with your invited members.');
+    }catch(e){setProblem(e.message+' If the connection was interrupted, reload before trying again.');}finally{setBusy(false);}
+  }
   const unlocked=keys&&keys.keyId===remoteKey;
   return <main><header><div><div className="eyebrow">THUNDER</div><h1>Private chat</h1><p className="muted">One room. People you trust.</p></div><div><span className={online?'online':'offline'}>{online?'Connected':'Reconnecting…'}</span><small>{me&&<p>{me.email}</p>}</small></div></header>
     <p className="notice">Encrypted message content is unlocked on your devices. The service still sees member identities, timing, and delivery information.</p>
@@ -74,12 +105,15 @@ function App(){
       </details>}
       {remoteKey&&<p><small>Room fingerprint: <code>{remoteKey}</code></small></p>}
     </section>}
-    {unlocked&&<><div className="row"><p className="online">Encryption unlocked on this device</p><button className="secondary" onClick={lock}>Lock &amp; forget key</button></div>
+    {unlocked&&<><div className="row"><p className="online">Encryption unlocked on this device</p><button className="secondary" disabled={busy} onClick={lock}>Lock &amp; forget key</button></div>
       {more&&<button className="secondary" onClick={()=>emit({type:'history',before:Math.min(...items.map(x=>x.seq))})}>Load earlier messages</button>}
       <div className="messages" aria-live="polite">{!items.length&&!pending.length&&<p className="muted">Your encrypted conversation starts here. Previous prototype rooms remain separate.</p>}{items.map(m=><article key={m.id} className={'message '+(m.sender===me.email?'own':'')}><small>{m.sender===me.email?'You':m.sender}</small><p>{m.text}</p>{m.sender===me.email&&<small>{m.deliveries?.length?`Delivered to ${m.deliveries.map(d=>d.recipient).join(', ')}`:'Sent · waiting for a recipient device'}</small>}</article>)}
       {pending.map(m=><article key={m.id} className="message own"><small>You</small><p>{cache.current.get(m.id)||'Encrypted message queued on this device'}</p><small>{online?'Sending…':'Queued · will retry when connected'}</small><button className="secondary" disabled={!online} onClick={()=>emit({type:'send',message:m})}>Retry</button></article>)}</div>
       <form className="composer" onSubmit={submit}><label>Message<textarea value={draft} maxLength={4000} onChange={e=>setDraft(e.target.value)} placeholder="Write a private message…"/></label><button disabled={busy||!draft.trim()}>{online?'Send encrypted message':'Queue encrypted message'}</button><p><small>Sent = encrypted message stored. Delivered = another member’s device decrypted it. Neither means read.</small></p></form>
       <details><summary>Privacy &amp; recovery</summary><p>This version uses a shared room key, not a forward-secure ratcheting protocol. Anyone who has that key can decrypt the room’s history. Removing a member’s login does not erase their key or saved messages. Key rotation is required before using this room after a membership change.</p><p>Keep your recovery key. Losing it and every unlocked device means losing access to encrypted history. This web app also depends on trustworthy code being served to your browser.</p><small>Room fingerprint: <code>{keys.keyId}</code></small></details>
+      {me.owner&&<details><summary>Replace recovery key</summary><p>Use this unlocked device to encrypt stored history with a new key. Save it first, then share it directly with invited members. Other devices will need the new key. Messages and delivery confirmations are preserved; copies already saved by others cannot be revoked. Supports up to 1,000 messages and 8 MB; larger histories remain unchanged.</p>
+        {!replacement?<button className="secondary" disabled={busy||!online||pending.length>0} onClick={()=>{setReplacement(createRecoveryKey());setReplacementSaved(false);}}>Generate replacement key</button>:<><code>{replacement}</code><label className="check"><input type="checkbox" checked={replacementSaved} onChange={e=>setReplacementSaved(e.target.checked)}/>I saved the new recovery key in my password manager.</label><button disabled={!replacementSaved||busy||!online||pending.length>0} onClick={replaceKey}>Replace key and preserve history</button></>}
+      </details>}
     </>}
   </main>;
 }

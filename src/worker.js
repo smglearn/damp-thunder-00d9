@@ -30,6 +30,13 @@ export default {
     let user;try{user=await identity(request,env);}catch{return secured(error('Sign in with an invited Cloudflare Access account.',401));}
     const url=new URL(request.url);
     if(url.pathname==='/api/me'&&request.method==='GET') return secured(Response.json({email:user.email,owner:user.email===env.OWNER_EMAIL?.toLowerCase(),room:ROOM}));
+    if(url.pathname==='/api/recovery') {
+      if(user.email!==env.OWNER_EMAIL?.toLowerCase())return secured(error('Owner only',403));
+      if(!['GET','POST'].includes(request.method))return secured(error('Method not allowed',405));
+      if(request.method==='POST'&&(request.headers.get('Origin')!==url.origin||!request.headers.get('Content-Type')?.startsWith('application/json')))return secured(error('Origin or content type denied',403));
+      const headers=new Headers(request.headers);headers.set('x-thunder-identity',JSON.stringify(user));
+      return secured(await env.Chat.get(env.Chat.idFromName(ROOM)).fetch(new Request(request,{headers})));
+    }
     const legacyApi=url.pathname.match(/^\/api\/legacy\/([A-Za-z0-9_-]{21})$/);
     if(legacyApi){
       if(user.email!==env.OWNER_EMAIL?.toLowerCase())return secured(error('Owner-only archive',403));
@@ -84,12 +91,52 @@ export class Chat extends DurableObject {
       const rows=table.length?this.ctx.storage.sql.exec('SELECT rowid AS cursor,id,user,role,content FROM messages WHERE rowid > ? ORDER BY rowid LIMIT 51',after).toArray():[];
       return Response.json({messages:rows.slice(0,50),hasMore:rows.length>50,readOnly:true});
     }
+    if(new URL(request.url).pathname==='/api/recovery')return this.recovery(request,user);
     if(this.ctx.getWebSockets().length>=50)return error('Room connection limit',429);
     const pair=new WebSocketPair();this.ctx.acceptWebSocket(pair[1]);pair[1].serializeAttachment(user);
     send(pair[1],{type:'hello',keyId:this.keyId(),room:ROOM});
     return new Response(null,{status:101,webSocket:pair[0]});
   }
   broadcast(event) {for(const ws of this.ctx.getWebSockets()){if(this.valid(ws.deserializeAttachment()))send(ws,event);else ws.close(1008,'Sign in again');}}
+  async recovery(request,user) {
+    if(user.email!==this.env.OWNER_EMAIL?.toLowerCase())return error('Owner only',403);
+    const limit=8*1024*1024;
+    if(request.method==='GET') {
+      const totals=this.ctx.storage.sql.exec('SELECT COUNT(*) AS count,COALESCE(SUM(length(envelope)),0) AS bytes FROM encrypted_messages_v1').one();
+      if(totals.count>1000||totals.bytes>limit-65536)return error('This history needs a larger migration. Nothing was changed.',413);
+      const rows=this.ctx.storage.sql.exec('SELECT * FROM encrypted_messages_v1 ORDER BY seq LIMIT 1001').toArray();
+      if(rows.length>1000)return error('This history needs a larger migration. Nothing was changed.',413);
+      const data=JSON.stringify({keyId:this.keyId(),messages:rows.map(r=>({...JSON.parse(r.envelope),seq:r.seq}))});
+      if(new TextEncoder().encode(data).length>limit)return error('This history needs a larger migration. Nothing was changed.',413);
+      return new Response(data,{headers:{'Content-Type':'application/json'}});
+    }
+    if(request.method!=='POST')return error('Method not allowed',405);
+    let event;
+    try {
+      const reader=request.body?.getReader();if(!reader)return error('Missing replacement',400);
+      const chunks=[];let size=0;
+      for(;;){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>limit){await reader.cancel();return error('Replacement too large. Nothing was changed.',413);}chunks.push(value);}
+      const bytes=new Uint8Array(size);let offset=0;for(const part of chunks){bytes.set(part,offset);offset+=part.length;}
+      event=JSON.parse(new TextDecoder().decode(bytes));
+    }catch{return error('Invalid replacement',400);}
+    if(typeof event.keyId!=='string'||event.keyId.length!==43||!B64.test(event.keyId)||event.keyId===event.previousKeyId||!Array.isArray(event.messages)||event.messages.length>1000)return error('Invalid replacement',400);
+    // No await between checking the snapshot and committing: sends cannot interleave.
+    if(!this.valid(user))return error('Sign in again',401);
+    if(!this.keyId()||event.previousKeyId!==this.keyId())return error('Room key changed. Reload before trying again.',409);
+    const rows=this.ctx.storage.sql.exec('SELECT * FROM encrypted_messages_v1 ORDER BY seq LIMIT 1001').toArray();
+    if(rows.length!==event.messages.length)return error('New messages arrived. Try again; nothing was changed.',409);
+    for(let i=0;i<rows.length;i++){
+      const original=JSON.parse(rows[i].envelope),m=event.messages[i];
+      if(!m||m.v!==1||m.room!==ROOM||m.id!==original.id||m.sender!==original.sender||m.proofHash!==original.proofHash||m.keyId!==event.keyId||Object.keys(m).sort().join(',')!=='ciphertext,id,iv,keyId,proofHash,room,sender,v'||typeof m.iv!=='string'||m.iv.length!==16||!B64.test(m.iv)||typeof m.ciphertext!=='string'||m.ciphertext.length<22||m.ciphertext.length>33000||!B64.test(m.ciphertext))return error('Replacement does not match stored history',400);
+    }
+    this.ctx.storage.transactionSync(()=>{
+      for(const m of event.messages)this.ctx.storage.sql.exec('UPDATE encrypted_messages_v1 SET envelope=? WHERE id=?',JSON.stringify(m),m.id);
+      this.ctx.storage.sql.exec('UPDATE room_config_v1 SET key_id=? WHERE id=1',event.keyId);
+    });
+    await this.ctx.storage.sync();
+    this.broadcast({type:'hello',keyId:this.keyId(),room:ROOM});
+    return Response.json({keyId:this.keyId(),updated:rows.length});
+  }
   rate(user) {
     const window=Math.floor(Date.now()/60000);const row=this.ctx.storage.sql.exec('SELECT window,count FROM rate_v1 WHERE sender=?',user.email).toArray()[0];
     const count=row?.window===window?row.count+1:1;
