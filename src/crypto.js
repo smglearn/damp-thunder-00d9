@@ -34,3 +34,14 @@ export async function decryptMessage(keys,m) {
   if(typeof p.text!=='string'||typeof p.proof!=='string'||await digest(p.proof)!==m.proofHash) throw Error('Message authentication failed');
   return p;
 }
+export async function reencryptMessage(oldKeys,newKeys,message) {
+  const payload=await decryptMessage(oldKeys,message);
+  const {v,room,id,sender,proofHash}=message;
+  const m={v,room,id,sender,keyId:newKeys.keyId,proofHash};
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext=await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:aad(m),tagLength:128},newKeys.key,enc.encode(JSON.stringify(payload)));
+  const next={...m,iv:b64(iv),ciphertext:b64(ciphertext)};
+  // Verify every replacement before sending it to storage.
+  await decryptMessage(newKeys,next);
+  return next;
+}
