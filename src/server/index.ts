@@ -12,10 +12,6 @@ export class Chat extends Server<Env> {
 
   messages = [] as ChatMessage[];
 
-  broadcastMessage(message: Message, exclude?: string[]) {
-    this.broadcast(JSON.stringify(message), exclude);
-  }
-
   onStart() {
     // this is where you can initialize things that need to be done before the server starts
     // for example, load previous messages from a database or a service
