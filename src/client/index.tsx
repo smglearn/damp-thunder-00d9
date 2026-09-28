@@ -14,12 +14,21 @@ import { names, type ChatMessage, type Message } from "../shared";
 
 function App() {
   const [name] = useState(names[Math.floor(Math.random() * names.length)]);
+  const [token] = useState(() => {
+    let t = localStorage.getItem("chat-session-token");
+    if (!t) {
+      t = nanoid();
+      localStorage.setItem("chat-session-token", t);
+    }
+    return t;
+  });
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const { room } = useParams();
 
   const socket = usePartySocket({
     party: "chat",
     room,
+    query: { token },
     onMessage: (evt) => {
       const message = JSON.parse(evt.data as string) as Message;
       if (message.type === "add") {
