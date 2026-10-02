@@ -16,8 +16,8 @@
   },
   "devDependencies": {
     "esbuild": "^0.28.2",
-    "miniflare": "^5.20260908.0-alpha",
-    "wrangler": "^4.130.0"
+    "miniflare": "^5.20261001.0-alpha",
+    "wrangler": "^4.146.0"
   },
   "overrides": {
     "sharp": "^0.35.4"
